@@ -39,17 +39,13 @@ class IpPacketIO:
         # Add the last packet
         if packet_data:
             packets[packet_number] = packet_data
-
-        print(f"Total number of packets: {len(packets)}")
-        # print(packets)
-        for i in packets:
-            print(f"Packet {i}: {packets[i]}")
         return packets
 
 
 class IpPacketHelper:
     __SUBNET__ = "142.58.22."
     __BROADCAST_IP__ = __SUBNET__ + "255"
+    __IP_DATAGRAM_MAX_LENGTH__ = 65535
 
     # IP Packet parsing helper functions
     @staticmethod
@@ -73,7 +69,6 @@ class IpHeader:
     def get_ip_addresses(self):
         # Convert hexadecimal IP address to decimal
         ip_header = IpPacketHelper.parse_ip_packet_parts(self.__raw_packet_data, 0)
-        # print(f"IP header: {ip_header}")
         source_ip_parts = [
             ip_header[6][0:2],
             ip_header[6][2:4],
@@ -89,8 +84,6 @@ class IpHeader:
             ip_header[1][2:4],
         ]
         destination_ip = self.parse_ip_address(destination_ip_parts)
-        # print(f"Source IP: {source_ip}")
-        # print(f"Destination IP: {destination_ip}")
 
         return source_ip, destination_ip
 
@@ -104,7 +97,10 @@ class IpHeader:
         self.packet_length = int(ip_header[1], 16)
         self.indentifier = int(ip_header[2], 16)
         self.ip_flags = int(ip_header[3][0], 16)
-        self.fragment_offset = int(ip_header[3][1:], 16)
+        self.fragment_offset = int(ip_header[3][0:], 16)
+        self.fragment_offset = (
+            BitManipulation.get_last_n_bits(self.fragment_offset, 13) * 8
+        )
         self.time_to_live = int(ip_header[4][0:2], 16)
         self.protocol = int(ip_header[4][2:], 16)
         self.header_checksum = int(ip_header[5], 16)
@@ -118,6 +114,10 @@ class BitManipulation:
     def is_bit_set(x, n):
         """Check if nth bit is set in binary representation of x."""
         return (x & (1 << n)) != 0
+
+    def get_last_n_bits(x, n):
+        """Get last n bits of x."""
+        return x & ((1 << n) - 1)
 
 
 class TcpFlag:
@@ -185,11 +185,9 @@ class TcpHeader:
         self.source_port = int(
             IpPacketHelper.parse_ip_packet_parts(self.__raw_packet_data, 1)[2], 16
         )
-        # print(f"Source port: {self.source_port}")
         self.destination_port = int(
             IpPacketHelper.parse_ip_packet_parts(self.__raw_packet_data, 1)[3], 16
         )
-        # print(f"Destination port: {self.destination_port}")
 
 
 class IcmpHeader:
@@ -201,11 +199,8 @@ class IcmpHeader:
         icmp_header = IpPacketHelper.parse_ip_packet_parts(self.__raw_packet_data, 1)[
             2:
         ]  # index 0 and 1 are destination IP address (part of IP header), hence [2:]
-        print(f"ICMP header: {icmp_header}")
         self.icmp_type = int(icmp_header[0][0:2], 16)
-        print(f"ICMP type: {self.icmp_type}")
         self.icmp_code = int(icmp_header[0][2:], 16)
-        print(f"ICMP code: {self.icmp_code}")
 
 
 class IpPacket:
@@ -276,9 +271,19 @@ class TcpConnectionState:
     def update_state(self, tcp_flag_str, current_connection_key):
         if tcp_flag_str == "SYN":
             self.__SYN = True
-        elif tcp_flag_str == "SYN-ACK" and TcpHandsake.we_can_send_syn_ack_because_we_recieved_syn(current_connection_key):
+        elif (
+            tcp_flag_str == "SYN-ACK"
+            and TcpHandsake.we_can_send_syn_ack_because_we_recieved_syn(
+                current_connection_key
+            )
+        ):
             self.__SYN_ACK = True
-        elif tcp_flag_str == "ACK" and TcpHandsake.we_can_send_ack_because_we_recieved_syn_ack(current_connection_key):
+        elif (
+            tcp_flag_str == "ACK"
+            and TcpHandsake.we_can_send_ack_because_we_recieved_syn_ack(
+                current_connection_key
+            )
+        ):
             self.__ACK = True
         return __ALLOW_PACKAGE__
 
@@ -287,7 +292,7 @@ class TcpConnectionState:
 
     def get_SYN_ACK(self):
         return self.__SYN_ACK
-    
+
     def get_ACK(self):
         return self.__ACK
 
@@ -300,11 +305,11 @@ class TcpConnection:
     """
 
     __TCP_CONNECTIONS__ = {}
-    
-    @staticmethod
-    def print_connections():
-        for key, state in TcpConnection.__TCP_CONNECTIONS__.items():
-            print(f"{key} -> {state}")
+
+    # @staticmethod
+    # def print_connections():
+    #     for key, state in TcpConnection.__TCP_CONNECTIONS__.items():
+    #         print(f"{key} -> {state}")
 
     @staticmethod
     def get_keys_by_source_ip_address(source_ip):
@@ -330,7 +335,7 @@ class TcpConnection:
     @staticmethod
     def add_packet_to_connections(packet):
         if not packet.is_tcp_packet:
-            print(f"Cannot add non-TCP packet to connection: {packet}")
+            print(f"NOTREACHED | Cannot add non-TCP packet to connection: {packet}")
             return __DROP_PACKAGE__
 
         connection_key = TcpConnectionKey(
@@ -353,43 +358,61 @@ class TcpConnection:
             if connection_state.get_SYN_ACK():
                 return __DROP_PACKAGE__
 
-        if not TcpConnectionPolicyEnforcer.can_add_packet_to_connection(connection_key, tcp_flag):
+        if not TcpConnectionPolicyEnforcer.can_add_packet_to_connection(
+            connection_key, tcp_flag
+        ):
             return __DROP_PACKAGE__
 
-        print(f"Connection state: {connection_state} for {connection_key}")
-
-
         return connection_state.update_state(tcp_flag, connection_key)
+
 
 class TcpHandsake:
     @staticmethod
     def we_can_send_syn_ack_because_we_recieved_syn(interigator_connection_key):
         interigated_connection_key = interigator_connection_key.reverse()
-        connection_state = TcpConnection.get_or_create_connection_state(interigated_connection_key)
+        connection_state = TcpConnection.get_or_create_connection_state(
+            interigated_connection_key
+        )
         return connection_state.get_SYN()
 
     @staticmethod
     def we_can_send_ack_because_we_recieved_syn_ack(interigator_connection_key):
         interigated_connection_key = interigator_connection_key.reverse()
-        connection_state = TcpConnection.get_or_create_connection_state(interigated_connection_key)
-        print(f"current key: {interigator_connection_key}, reverse key: {interigated_connection_key} and reverse connection state: {connection_state}")
+        connection_state = TcpConnection.get_or_create_connection_state(
+            interigated_connection_key
+        )
         return connection_state.get_SYN_ACK()
-
 
 
 class TcpConnectionPolicyEnforcer:
     @staticmethod
     def must_obey_throttle_policy(connection_key):
-        source_ip_is_outside_subnet = not IpPacketHelper.in_subnet(connection_key.source_ip)
-        destination_ip_is_in_subnet = IpPacketHelper.in_subnet(connection_key.destination_ip)
+        source_ip_is_outside_subnet = not IpPacketHelper.in_subnet(
+            connection_key.source_ip
+        )
+        destination_ip_is_in_subnet = IpPacketHelper.in_subnet(
+            connection_key.destination_ip
+        )
         return source_ip_is_outside_subnet and destination_ip_is_in_subnet
 
     @staticmethod
-    def get_full_connection_count(connection_key, ignore_ports = True):
+    def get_full_connection_count(connection_key, ignore_ports=True):
         if not ignore_ports:
-            return 1 if TcpConnection.get_or_create_connection_state(connection_key).get_ACK() else 0
-        connection_keys = TcpConnection.get_keys_by_source_ip_address(connection_key.source_ip)
-        throttled_keys = list(filter(TcpConnectionPolicyEnforcer.must_obey_throttle_policy, connection_keys))
+            return (
+                1
+                if TcpConnection.get_or_create_connection_state(
+                    connection_key
+                ).get_ACK()
+                else 0
+            )
+        connection_keys = TcpConnection.get_keys_by_source_ip_address(
+            connection_key.source_ip
+        )
+        throttled_keys = list(
+            filter(
+                TcpConnectionPolicyEnforcer.must_obey_throttle_policy, connection_keys
+            )
+        )
         count = 0
         for key in throttled_keys:
             connection_state = TcpConnection.get_or_create_connection_state(key)
@@ -398,52 +421,78 @@ class TcpConnectionPolicyEnforcer:
         return count
 
     @staticmethod
-    def get_half_open_connection_count(connection_key, ignore_ports = True):
+    def get_half_open_connection_count(connection_key, ignore_ports=True):
         if not ignore_ports:
-            return 1 if TcpConnection.get_or_create_connection_state(connection_key).get_SYN() or TcpConnection.get_or_create_connection_state(connection_key).get_SYN_ACK() else 0
-        connection_keys = TcpConnection.get_keys_by_source_ip_address(connection_key.source_ip)
-        throttled_keys = list(filter(TcpConnectionPolicyEnforcer.must_obey_throttle_policy, connection_keys))
+            return (
+                1
+                if TcpConnection.get_or_create_connection_state(
+                    connection_key
+                ).get_SYN()
+                or TcpConnection.get_or_create_connection_state(
+                    connection_key
+                ).get_SYN_ACK()
+                else 0
+            )
+        connection_keys = TcpConnection.get_keys_by_source_ip_address(
+            connection_key.source_ip
+        )
+        throttled_keys = list(
+            filter(
+                TcpConnectionPolicyEnforcer.must_obey_throttle_policy, connection_keys
+            )
+        )
         count = 0
         for key in throttled_keys:
             connection_state = TcpConnection.get_or_create_connection_state(key)
             if connection_state.get_SYN() or connection_state.get_SYN_ACK():
-                print(f"throtled key: {key}")
                 count += 1
         return count
 
     @staticmethod
     def throttled_address_is_at_max_half_open_connections(connection_key):
-        count = TcpConnectionPolicyEnforcer.get_half_open_connection_count(connection_key)
-        print(f"Half open connections: {count}")
+        count = TcpConnectionPolicyEnforcer.get_half_open_connection_count(
+            connection_key
+        )
         return count >= 10
 
     @staticmethod
     def tcp_ports_are_inuse(connection_key):
-        '''Only one TCP connection, whether half-open or fully open, can exist at a time
+        """Only one TCP connection, whether half-open or fully open, can exist at a time
         between two TCP ports. Any attempt to open a new connection between two
         TCP ports while a connection already exists will be completely ignored by the
-        application without affecting the current connection.'''
-        open_connection_count = TcpConnectionPolicyEnforcer.get_full_connection_count(connection_key, False) + TcpConnectionPolicyEnforcer.get_half_open_connection_count(connection_key, False)
+        application without affecting the current connection."""
+        open_connection_count = TcpConnectionPolicyEnforcer.get_full_connection_count(
+            connection_key, False
+        ) + TcpConnectionPolicyEnforcer.get_half_open_connection_count(
+            connection_key, False
+        )
         return open_connection_count > 0
 
     @staticmethod
     def can_add_packet_to_connection(connection_key, incoming_tcp_flag):
         is_new_connection_request = incoming_tcp_flag == "SYN"
-        ports_are_inuse = TcpConnectionPolicyEnforcer.tcp_ports_are_inuse(connection_key)
-        at_max_half_open_connections = TcpConnectionPolicyEnforcer.throttled_address_is_at_max_half_open_connections(connection_key)
-        print(f"Ports are in use: {ports_are_inuse}")
-        print(f"At max half open connections: {at_max_half_open_connections}")
-        return not (ports_are_inuse and is_new_connection_request) and not at_max_half_open_connections
+        ports_are_inuse = TcpConnectionPolicyEnforcer.tcp_ports_are_inuse(
+            connection_key
+        )
+        at_max_half_open_connections = TcpConnectionPolicyEnforcer.throttled_address_is_at_max_half_open_connections(
+            connection_key
+        )
+        return (
+            not (ports_are_inuse and is_new_connection_request)
+            and not at_max_half_open_connections
+        )
 
 
-def is_ping_attack(icmp_type, icmp_code, protocol, destination_ip):
-    return (
-        icmp_type == 8
-        and icmp_code == 0
-        and protocol == 1
-        and destination_ip == IpPacketHelper.__BROADCAST_IP__
+def is_ping_of_death_or_smurf_attack(ip_header, icmp_header):
+    is_icmp_echo_request = (
+        icmp_header.icmp_type == 8
+        and icmp_header.icmp_code == 0
+        and ip_header.protocol == 1
     )
-
+    package_length = ip_header.packet_length + ip_header.fragment_offset
+    is_smurf_attack = ip_header.destination_ip == IpPacketHelper.__BROADCAST_IP__
+    is_ping_of_death_attack = package_length > IpPacketHelper.__IP_DATAGRAM_MAX_LENGTH__
+    return is_icmp_echo_request and (is_smurf_attack or is_ping_of_death_attack)
 
 
 def process_packet_data(packet_data, option):
@@ -455,33 +504,18 @@ def process_packet_data(packet_data, option):
     is_tcp_packet = packet.is_tcp_packet
     is_icmp_packet = packet.is_icmp_packet
 
-
-    if is_tcp_packet:
-        connection_type = f"TCP({tcp_header.tcp_flag})"
-        print(f"Processing connection: [{connection_type}] {packet.ip_header.source_ip}:{packet.tcp_header.source_port} -> {packet.ip_header.destination_ip}:{packet.tcp_header.destination_port}")
-    elif is_icmp_packet:
-        print(f"Processing connection: [ICMP] {packet.ip_header.source_ip} -> {packet.ip_header.destination_ip}")
-
     # Check the option and apply appropriate filtering rules
     if option == "-i":
         # Egress filtering rule
         if not IpPacketHelper.in_subnet(
             ip_header.source_ip
-            ) or IpPacketHelper.in_subnet(
-            ip_header.destination_ip
-            ):
+        ) or IpPacketHelper.in_subnet(ip_header.destination_ip):
             return __DROP_PACKAGE__  # Drop the packet
     elif option == "-j":
         # ICMP filtering rule
-        if is_icmp_packet and is_ping_attack(
-            icmp_header.icmp_type,
-            icmp_header.icmp_code,
-            ip_header.protocol,
-            ip_header.destination_ip,
-        ):
+        if is_icmp_packet and is_ping_of_death_or_smurf_attack(ip_header, icmp_header):
             return __DROP_PACKAGE__
     elif option == "-k" and is_tcp_packet:
-        # TODO: check protocol == 6 and flag == 18?
         return TcpConnection.add_packet_to_connections(packet)
 
     return __ALLOW_PACKAGE__  # Do not drop the packet
@@ -502,13 +536,15 @@ def main():
 
     option, filename = sys.argv[1], sys.argv[2]
 
+    if option not in ["-i", "-j", "-k"]:
+        print(f"Invalid option: {option}, must be one of -i, -j, -k")
+        sys.exit(1)
+
     # Parse the packet file
     packets = IpPacketIO.parse_packet_file(filename)
 
     for packet_number, packet_data in packets.items():
         examine_packet_data(packet_data, packet_number, option)
-    
-    TcpConnection.print_connections()
 
 
 if __name__ == "__main__":
