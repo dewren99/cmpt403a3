@@ -311,11 +311,21 @@ class TcpConnection:
     #     for key, state in TcpConnection.__TCP_CONNECTIONS__.items():
     #         print(f"{key} -> {state}")
 
+    # @staticmethod
+    # def get_keys_by_source_ip_address(source_ip):
+    #     return list(
+    #         filter(
+    #             lambda key: key.source_ip == source_ip,
+    #             TcpConnection.__TCP_CONNECTIONS__.keys(),
+    #         )
+    #     )
+
     @staticmethod
-    def get_keys_by_source_ip_address(source_ip):
+    def get_keys_by_source(source_ip, source_port):
         return list(
             filter(
-                lambda key: key.source_ip == source_ip,
+                lambda key: key.source_ip == source_ip
+                and key.source_port == source_port,
                 TcpConnection.__TCP_CONNECTIONS__.keys(),
             )
         )
@@ -405,8 +415,8 @@ class TcpConnectionPolicyEnforcer:
                 ).get_ACK()
                 else 0
             )
-        connection_keys = TcpConnection.get_keys_by_source_ip_address(
-            connection_key.source_ip
+        connection_keys = TcpConnection.get_keys_by_source(
+            connection_key.source_ip, connection_key.source_port
         )
         throttled_keys = list(
             filter(
@@ -433,8 +443,8 @@ class TcpConnectionPolicyEnforcer:
                 ).get_SYN_ACK()
                 else 0
             )
-        connection_keys = TcpConnection.get_keys_by_source_ip_address(
-            connection_key.source_ip
+        connection_keys = TcpConnection.get_keys_by_source(
+            connection_key.source_ip, connection_key.source_port
         )
         throttled_keys = list(
             filter(
